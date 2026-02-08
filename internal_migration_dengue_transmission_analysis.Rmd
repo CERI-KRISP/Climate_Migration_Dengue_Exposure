@@ -1,0 +1,241 @@
+
+# Climate-Driven Internal Migration and Dengue Risk in Africa
+
+This analysis investigates projected climate-driven internal migration across African countries and its potential impact on population exposure to dengue risk under future socioeconomic and climate scenarios (SSPs) for 2020 and 2050. The approach integrates population-at-risk data with dengue suitability maps and internal migration projections. Population inflows are added to baseline populations to compute risk with and without migration. Absolute and percentage changes are calculated at grid, country, and regional levels, with spatial and temporal visualization to identify exposure hotspots.
+
+
+Part 0 – Load Libraries and Datasets
+```{r}
+# ==============================
+# Load Required Libraries
+# ==============================
+library(dplyr)
+library(tidyr)
+library(sf)
+library(terra)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(RColorBrewer)
+library(patchwork)
+library(ggforce)
+library(ggrepel)
+library(tibble)
+library(purrr)
+library(viridis)
+
+# Set Working Directory
+setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
+
+# Load Datasets
+migration_orig <- st_read("Data/InternalMigration/combined_internal_migration.gpkg", quiet = TRUE)
+denTP <- rast("Data/DTP_2020.tiff")
+pop_stack <- rast("Data/Population/Population_2020_2050_ACMI.tif")
+africa_sf <- st_as_sf(vect("Data/Africa_regions.gpkg"))
+```
+
+Part 1 - Spatial distribution of dengue risk 
+```{r, warning=FALSE}
+# Select columns with migration differences and reshape
+flow_long <- migration_orig %>%
+  st_drop_geometry() %>%
+  select(ends_with("_diff")) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "migration_flow"
+  ) %>%
+  mutate(
+    RCP_num = str_sub(variable, 3, 4),
+    SSP_num = str_sub(variable, 5, 5),
+    year = paste0("20", str_sub(variable, 6, 7)),
+    scenario = paste0("SSP", SSP_num, RCP_num)
+  ) %>%
+  select(-RCP_num, -SSP_num)
+
+# Binary dengue suitability raster
+dengue_bin <- classify(denTP, rbind(c(-Inf, 0.5, 0), c(0.5, Inf, 1)))
+
+# Aggregate population to ~10 km resolution
+fact <- round(res(dengue_bin)[1] / res(pop_stack)[1])
+pop_agg <- aggregate(pop_stack, fact = fact, fun = sum, na.rm = TRUE)
+
+# Resample dengue raster to population grid
+dengue_res <- resample(crop(dengue_bin, pop_agg[[1]]), pop_agg[[1]], method = "near")
+
+#Compute Dengue Risk With and Without Migration
+years_analysis <- c(2020, 2050)
+scenarios <- "SSP160"
+all_years_df <- list()
+
+for (y in years_analysis) {
+  pop_layer <- pop_agg[[grep(as.character(y), names(pop_agg))]]
+  risk_no_mig <- mask(pop_layer, dengue_res, maskvalue = 0, updatevalue = 0)
+
+  for (ssp in scenarios) {
+    # Subset migration flows
+    mig_sub <- flow_long %>% filter(year == as.character(y), scenario == ssp)
+    
+    if (nrow(mig_sub) == 0) {
+      mig_rast <- rast(pop_layer); values(mig_rast) <- 0
+    } else {
+      mig_sf <- migration_orig %>%
+        select(geom) %>%
+        bind_cols(mig_sub %>% select(migration_flow))
+      mig_rast <- rasterize(vect(mig_sf), pop_layer, field = "migration_flow", fun = sum, background = 0)
+    }
+    
+    # Population with migration
+    pop_with_mig <- pop_layer + mig_rast
+    risk_with_mig <- mask(pop_with_mig, dengue_res, maskvalue = 0, updatevalue = 0)
+    
+    # Absolute and percentage change
+    absolute_change <- risk_with_mig - risk_no_mig
+    percentage_change <- ifel(risk_no_mig == 0, NA, (absolute_change / risk_no_mig) * 100)
+    
+    # Combine rasters and convert to dataframe
+    raster_stack <- c(risk_no_mig, risk_with_mig, absolute_change, percentage_change)
+    names(raster_stack) <- c("risk_without_migration", "risk_with_migration",
+                             "absolute_change_dengue_risk", "percentage_change")
+    
+    df <- as.data.frame(raster_stack, xy = TRUE, na.rm = TRUE)
+    df$year <- y; df$scenario <- ssp
+    all_years_df[[paste(y, ssp, sep = "_")]] <- df
+  }
+}
+
+combined_df <- bind_rows(all_years_df)
+
+# Categorize and Visualize Dengue Risk
+combined_df <- combined_df %>%
+  mutate(
+    pop_cat_with_mig = cut(risk_with_migration / 1000,
+                           breaks = c(-Inf,1,5,10,50,150,Inf),
+                           labels = c("0-1","1-5","5-10","10-50","50-150",">150"),
+                           include.lowest = TRUE, right = FALSE),
+    abs_change_cat = cut(absolute_change_dengue_risk,
+                         breaks = c(-Inf, -1000, -500, -100, -1, 0, 1, 100, 500, 1000, Inf),  
+                         labels = c("<-1000","-1000–-500","-500–-100","-100–-1","-1–0",
+                                    "0–1","1–100","100–500","500–1000",">1000"),
+                         include.lowest = TRUE, right = FALSE)
+  )
+
+# Color palettes
+seq_colors <- c("#ffffcc", "#ffeda0", "#feb24c", "#f03b20", "#bd0026", "#800026")
+div_colors <- c(
+  "#053061","#2166ac","#4393c3","#92c5de","#d1e5f0",
+  "#FFFFFF",
+  "#fddbc7","#f4a582","#b2182b","#bd0026","#800026"
+)
+
+# Population at risk WITH migration
+plot_with_mig <- ggplot(combined_df) +
+  geom_tile(aes(x = x, y = y, fill = pop_cat_with_mig)) +
+  geom_sf(data = africa_sf, fill = NA, color = "#303030", size = 0.5) +
+  scale_fill_manual(values = seq_colors, name = "Population at risk (Thousands)",
+                    drop = FALSE, guide = guide_legend(title.position="top", 
+                                                       direction="horizontal", nrow=1)) +
+  geom_sf_text(data = africa_sf, aes(label = ISO3), size = 2, color="#474747", check_overlap = TRUE) +
+  facet_wrap(~year, ncol = 2) +
+  theme_void() + theme(plot.title = element_text(hjust=0.5, size=14, face="bold"),
+                       legend.position="bottom", legend.text=element_text(size=8),
+                       legend.title=element_text(size=10, face="bold"),
+                       strip.text=element_text(face="bold", size=12)) +
+  coord_sf(xlim=c(-20,55), ylim=c(-40,40), expand=FALSE)
+
+ggsave("Output/Population_With_Migration_All_SSP.pdf", 
+       plot_with_mig, 
+       width=8, 
+       height=6, 
+       dpi=300)
+
+# Absolute change due to migration
+plot_abs_change <- ggplot(combined_df) +
+  geom_tile(aes(x = x, y = y, fill = abs_change_cat)) +
+  geom_sf(data = africa_sf, fill = NA, color = "#303030", size = 0.5) +
+  scale_fill_manual(values = div_colors, name="Risk change",
+                    drop=FALSE, guide = guide_legend(title.position="top", 
+                                                     direction="horizontal", nrow=1)) +
+  facet_wrap(~year, ncol=2) +
+  theme_void() + theme(legend.position="bottom", legend.text=element_text(size=8),
+                       strip.text=element_text(face="bold", size=12)) +
+  coord_sf(xlim=c(-20,55), ylim=c(-40,40), expand=FALSE)
+
+ggsave("Output/Absolute_Change_Migration_All_SSP.pdf", 
+       plot_abs_change, 
+       width=8, 
+       height=6, 
+       dpi=300)
+```
+
+Part 2 - Country-Level Bar Plots
+```{r}
+# Convert to sf and join country boundaries
+combined_sf <- st_as_sf(combined_df, coords = c("x","y"), crs=st_crs(africa_sf))
+combined_sf <- st_join(combined_sf, africa_sf %>% select(ISO3)) %>% filter(!is.na(ISO3))
+
+# Summarize absolute change per country
+country_change <- combined_sf %>%
+  st_drop_geometry() %>%
+  group_by(ISO3, year, scenario) %>%
+  summarize(
+    increase = sum(absolute_change_dengue_risk[absolute_change_dengue_risk > 0], na.rm=TRUE),
+    decrease = sum(absolute_change_dengue_risk[absolute_change_dengue_risk < 0], na.rm=TRUE),
+    .groups="drop"
+  ) %>%
+  pivot_longer(cols=c(increase,decrease), names_to="Risk", values_to="value") %>%
+  mutate(value_million = value / 1e6)
+
+# Select top 20 countries across all scenarios
+top_countries <- country_change %>%
+  group_by(ISO3) %>% summarize(total_change=sum(abs(value_million)), .groups="drop") %>%
+  arrange(desc(total_change)) %>% slice(1:20) %>% pull(ISO3)
+plot_data_top <- country_change %>% filter(ISO3 %in% top_countries)
+
+# Define plotting order
+country_order <- plot_data_top %>% group_by(ISO3) %>% summarize(total_change=sum(abs(value_million))) %>%
+  arrange(desc(total_change)) %>% pull(ISO3)
+
+# Function to plot bar chart per scenario-year
+make_plot <- function(df, scenario_name, year_value){
+  df_year <- df %>% filter(scenario==scenario_name, year==year_value)
+  ggplot(df_year, aes(x=factor(ISO3, levels=country_order), y=value_million, fill=Risk)) +
+    geom_col() + coord_flip() +
+    scale_fill_manual(values=c("increase"="firebrick","decrease"="steelblue"),
+                      labels=c("Increase","Decrease")) +
+    labs(title=paste0("Scenario: ", scenario_name, " — Year ", year_value),
+         x="Country", y="Population at risk (Millions)") +
+    theme_bw() +
+    theme(axis.text.x=element_text(size=10, face="bold"),
+          axis.title=element_text(size=10, face="bold"),
+          legend.title=element_text(size=10, face="bold"),
+          legend.text=element_text(size=10),
+          legend.position=c(0.95,0.65),
+          legend.justification=c("right","bottom"))
+}
+
+# Generate and save plots
+scenario_list <- unique(plot_data_top$scenario)
+plots_2020 <- lapply(scenario_list, function(sc) make_plot(plot_data_top, sc, 2020))
+plots_2050 <- lapply(scenario_list, function(sc) make_plot(plot_data_top, sc, 2050))
+
+dir.create("Output", showWarnings = FALSE)
+for (i in seq_along(scenario_list)){
+  ggsave(paste0("Output/change2020_", 
+                scenario_list[i], ".pdf"), 
+         plots_2020[[i]], 
+         width=5, 
+         height=6, 
+         dpi=300)
+  ggsave(paste0("Output/change2050_", 
+                scenario_list[i], ".pdf"), 
+         plots_2050[[i]], 
+         width=5, 
+         height=6, 
+         dpi=300)
+}
+```
+
+###### END  ######
+
+

@@ -1,0 +1,267 @@
+
+This analysis investigates projected *internal migration* flows across African countries under future climate and socioeconomic scenarios (SSPs) for 2020 and 2050. We quantify total inflows and outflows at the country level, identify top origin and destination areas, map spatial distributions of migration intensity, and highlight hotspot regions with high likelihoods of departure or arrival. By integrating temporal trends, country-level aggregations, and spatial visualization, the work provides a comprehensive view of internal climate-driven migration patterns.
+
+Part 0 - Libraries & Setup
+```{r}
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(sf)
+library(terra)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(ggnewscale)
+library(ggspatial)
+
+# Set working directory
+setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
+
+# Load Africa boundaries
+africa_sf <- st_read("Data/Africa_regions.gpkg", quiet = TRUE)
+```
+
+Part 1 - Internal Migration Data Preparation
+```{r}
+# Load internal migration data
+migration_sf <- st_read("Data/InternalMigration/combined_internal_migration.gpkg", quiet = TRUE)
+
+# Keep only columns ending with "_diff"
+flow_data <- migration_sf %>% select(ends_with("_diff"))
+
+# Convert from wide to long format
+flow_long <- flow_data %>%
+  pivot_longer(
+    cols = ends_with("_diff"),
+    names_to = "variable",
+    values_to = "migration_flow"
+  ) %>%
+  mutate(
+    # Extract RCP, SSP, and year
+    RCP_num = str_sub(variable, 3, 4),
+    SSP_num = str_sub(variable, 5, 5),
+    year = paste0("20", str_sub(variable, 6, 7)),
+    scenario = paste0("SSP", SSP_num, RCP_num),
+    flow_class = case_when(
+      migration_flow > 0 ~ "Inflow",
+      migration_flow < 0 ~ "Outflow",
+      TRUE ~ "Neutral"
+    )
+  ) %>%
+  select(-RCP_num, -SSP_num)
+```
+
+Part 2 - Total Inflow and Outflow Time Series by Scenario
+```{r}
+# Aggregate by country, scenario, and flow class
+country_flows_sf <- flow_long %>%
+  st_join(africa_sf %>% select(ISO3)) %>%
+  st_set_geometry(NULL) %>%
+  group_by(ISO3, scenario, year, flow_class) %>%
+  summarise(total_migration_flow = sum(migration_flow, na.rm = TRUE), .groups = "drop") %>%
+  left_join(africa_sf %>% select(ISO3, geometry), by = "ISO3") %>%
+  st_as_sf() %>%
+  pivot_wider(
+    names_from  = flow_class,
+    values_from = total_migration_flow,
+    values_fill = 0
+  )
+
+# Summarize total inflows by scenario and year
+inflow_flows <- country_flows_sf %>%
+  st_set_geometry(NULL) %>%
+  group_by(scenario, year) %>%
+  summarise(total_inflow = sum(Inflow, na.rm = TRUE), .groups = "drop") %>%
+  filter(scenario %in% c("SSP126", "SSP160", "SSP360")) %>%
+  mutate(
+    scenario = factor(scenario, levels = c("SSP126", "SSP160", "SSP360"),
+                      labels = c("SSP1-2.6", "SSP1-6.0", "SSP3-6.0")),
+    year = as.numeric(year)
+  )
+
+# Plot total inflows
+inflow_plot <- ggplot(inflow_flows, aes(x = year, y = total_inflow / 1e6, color = scenario)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = unique(inflow_flows$year)) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_color_brewer(palette = "Set2") +
+  coord_cartesian(ylim = c(14, 80)) +
+  labs(x = "Year", y = "Migrants (millions)", color = "Scenario") +
+  theme_bw(base_size = 12, base_family = "Helvetica") +
+  theme(
+    panel.grid       = element_blank(),
+    axis.title       = element_text(face = "bold"),
+    legend.title     = element_text(face = "bold"),
+    legend.position  = c(0.35, 0.45),
+    legend.justification = c("right", "bottom"),
+    legend.background = element_rect(fill = alpha("white", 0.7), color = NA)
+  )
+
+inflow_plot
+ggsave("Output/Inflow_by_scenario_Millions.pdf", plot = inflow_plot, width = 4, height = 3, dpi = 300)
+```
+
+Part 3 - Top 10 Countries (Inflows & Outflows)
+```{r}
+# Filter only SSP160
+ssp160_data <- country_flows_sf %>% filter(scenario == "SSP160")
+
+# Identify top 10 origins (Outflows) and destinations (Inflows)
+top10_origins      <- ssp160_data %>% st_set_geometry(NULL) %>%
+  group_by(ISO3) %>% summarise(total_outflow = sum(abs(Outflow), na.rm = TRUE)) %>%
+  arrange(desc(total_outflow)) %>% slice_head(n = 10) %>% pull(ISO3)
+
+top10_destinations <- ssp160_data %>% st_set_geometry(NULL) %>%
+  group_by(ISO3) %>% summarise(total_inflow = sum(Inflow, na.rm = TRUE)) %>%
+  arrange(desc(total_inflow)) %>% slice_head(n = 10) %>% pull(ISO3)
+
+# Prepare data for bar plots
+outflow_data <- ssp160_data %>%
+  st_set_geometry(NULL) %>%
+  filter(ISO3 %in% top10_origins) %>%
+  group_by(ISO3, year) %>%
+  summarise(yearly_outflow = sum(abs(Outflow), na.rm = TRUE), .groups = "drop") %>%
+  mutate(ISO3 = factor(ISO3, levels = top10_origins)) %>%
+  filter(year %in% c("2020", "2030", "2040", "2050"))
+
+inflow_data <- ssp160_data %>%
+  st_set_geometry(NULL) %>%
+  filter(ISO3 %in% top10_destinations) %>%
+  group_by(ISO3, year) %>%
+  summarise(yearly_inflow = sum(Inflow, na.rm = TRUE), .groups = "drop") %>%
+  mutate(ISO3 = factor(ISO3, levels = top10_destinations)) %>%
+  filter(year %in% c("2020", "2030", "2040", "2050"))
+
+# Plotting function
+plot_migration <- function(data, yvar, fillvar, y_label = "") {
+  ggplot(data, aes(x = factor(year), y = !!sym(yvar)/1e6, fill = !!sym(fillvar))) +
+    geom_col(position = "dodge", color = "black") +
+    scale_y_continuous(labels = scales::comma) +
+    scale_fill_brewer(palette = "Paired") +
+    labs(x = "Year", y = y_label, fill = "Country") +
+    theme_bw(base_size = 12, base_family = "Helvetica") +
+    theme(
+      axis.title = element_text(size = 10, face = "bold"),
+      axis.text  = element_text(size = 10),
+      legend.title = element_text(size = 10, face = "bold"),
+      legend.text  = element_text(size = 10),
+      legend.position = "right"
+    )
+}
+
+# Generate plots
+outflow_plot <- plot_migration(outflow_data, 
+                               "yearly_outflow", 
+                               "ISO3", 
+                               "Outflow (Millions)")
+inflow_plot  <- plot_migration(inflow_data,  
+                               "yearly_inflow",  
+                               "ISO3", 
+                               "Inflow (Millions)")
+
+outflow_plot
+inflow_plot
+
+# Save
+ggsave("Output/Top10_Outflow_Countries_2020_2050.pdf", 
+       outflow_plot, 
+       width = 4, 
+       height = 3, 
+       dpi = 300)
+ggsave("Output/Top10_Inflow_Countries_2020_2050.pdf",  
+       inflow_plot,  
+       width = 4, 
+       height = 3, 
+       dpi = 300)
+
+```
+
+Part 4 - Spatial Distribution of Internal Migration (2020 & 2050)
+```{r}
+# Filter SSP160 and target years
+target_years <- c("2020", "2050")
+flow_filtered <- flow_long %>% filter(scenario == "SSP160", year %in% target_years)
+flow_filtered$year <- factor(flow_filtered$year, levels = target_years)
+
+# Split into Outflow and Inflow
+leaving  <- flow_filtered %>% filter(flow_class == "Outflow") %>% mutate(migration_flow = abs(migration_flow))
+arriving <- flow_filtered %>% filter(flow_class == "Inflow")
+
+# Bin flows
+breaks <- c(0, 100, 1e3, 1e4, 1e5, 1e6, Inf)
+labels <- c("0", "100", "1k", "10k", "100k", "1M+")
+leaving  <- leaving %>% mutate(flow_bin = cut(migration_flow, breaks = breaks, labels = labels, include.lowest = TRUE))
+arriving <- arriving %>% mutate(flow_bin = cut(migration_flow, breaks = breaks, labels = labels, include.lowest = TRUE))
+
+# Define colors
+red_colors   <- c("0"="#ffe5e0","100"="#ff9990","1k"="#ff6666","10k"="#ff1a1a","100k"="#800000","1M+"="#4d0000")
+green_colors <- c("0"="#e0ffe0","100"="#99ff99","1k"="#66ff66","10k"="#1aff1a","100k"="#009900","1M+"="#004d00")
+
+# Plot map
+migration_map <- ggplot() +
+  geom_sf(data = leaving, aes(fill = flow_bin, geometry = geom), color = NA) +
+  scale_fill_manual(name = "Outflow", values = red_colors) +
+  ggnewscale::new_scale_fill() +
+  geom_sf(data = arriving, aes(fill = flow_bin, geometry = geom), color = NA) +
+  scale_fill_manual(name = "Inflow", values = green_colors) +
+  geom_sf(data = africa_sf, fill = NA, color = "#303030", size = 0.5) +
+  geom_sf_text(data = africa_sf, aes(label = ISO3), size = 3, color = "#474747") +
+  facet_wrap(~year, ncol = 2) +
+  theme_void() +
+  theme(legend.position = "bottom", legend.title = element_text(face="bold", size=10)) +
+  coord_sf(xlim = c(-20, 55), ylim = c(-40, 40), expand = FALSE)
+
+migration_map
+ggsave("Output/imssp160.pdf", 
+       migration_map, 
+       width = 10, 
+       height = 6, 
+       dpi = 600)
+```
+
+Part 5 - Migration Hotspots (Origin vs Destination)
+```{r}
+hotspot_sf <- migration_sf %>% select(Hotspot20, Hotspot50, geom)
+hotspot_long <- hotspot_sf %>%
+  pivot_longer(cols = starts_with("Hotspot"), names_to = "year", values_to = "hotspot_value") %>%
+  mutate(
+    year = paste0("20", gsub("Hotspot", "", year)),
+    type = case_when(hotspot_value > 0 ~ "Destination",
+                     hotspot_value < 0 ~ "Origin",
+                     TRUE ~ "Neutral"),
+    class = case_when(hotspot_value == 4 ~ "Very Likely",
+                      hotspot_value == 2 ~ "Likely",
+                      hotspot_value == -2 ~ "Likely",
+                      hotspot_value == -4 ~ "Very Likely",
+                      TRUE ~ "Neutral")
+  ) %>%
+  filter(type != "Neutral") %>%
+  mutate(class_factor = factor(class, levels = c("Likely","Very Likely")))
+
+origin_sf      <- hotspot_long %>% filter(type=="Origin")
+destination_sf <- hotspot_long %>% filter(type=="Destination")
+
+hotspot <- ggplot() +
+  geom_sf(data = origin_sf, aes(fill = class_factor), color = NA) +
+  scale_fill_manual(name="Origin", values=c("Likely"="#ff1a1a","Very Likely"="#4d0000")) +
+  ggnewscale::new_scale_fill() +
+  geom_sf(data = destination_sf, aes(fill = class_factor), color = NA) +
+  scale_fill_manual(name="Destination", values=c("Likely"="#1aff1a","Very Likely"="#004d00")) +
+  geom_sf(data = africa_sf, fill = NA, color="#303030", size=0.2) +
+  facet_wrap(~year, ncol=2) +
+  theme_void(base_size=10) +
+  theme(strip.text=element_text(face="bold",size=10), legend.position="bottom",
+        legend.title=element_text(face="bold",size=10), legend.text=element_text(size=10)) +
+  coord_sf(xlim=c(-20,55), ylim=c(-40,40), expand=FALSE)
+
+hotspot
+ggsave("Output/hotspot.pdf", 
+       hotspot, 
+       width=10, 
+       height=6, 
+       dpi=300)
+```
+
+#### END #####
+

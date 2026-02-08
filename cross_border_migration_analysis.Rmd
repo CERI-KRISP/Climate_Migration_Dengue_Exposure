@@ -1,0 +1,665 @@
+
+This analysis examines projected *cross-border migration* dynamics across Africa under future climate and socioeconomic scenarios (SSPs) for 2020 and 2050. Using country-level migration data, we quantify inflows and outflows, identify top destination and origin countries, and aggregate flows by African sub-regions. We complement these analyses with country-level composition maps and bilateral migration chord diagrams to reveal structural connectivity and dominant migration corridors. 
+
+Part 0: Libraries & Setup
+```{r}
+# Libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(readr)
+library(sf)
+library(scatterpie)
+library(ggrepel)
+library(RColorBrewer)
+library(stringr)
+library(circlize)
+
+# Working directory
+setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
+
+# Load main dataset
+data <- read_csv(
+  "Data/BilateralMigration/Summary_ACMI_bilateral_migration_2015_2050.csv"
+)
+```
+
+Part 1: Continental Cumulative Migration by Scenario
+```{r}
+flows_long <- data %>%
+  select(
+    dest_iso3c,
+    orig_iso3c,
+    year,
+    SSP126 = GEPIC_WG2_SSP1_RCP26D_mean,
+    SSP160 = GEPIC_WG2_SSP1_RCP60D_mean,
+    SSP360 = GEPIC_WG2_SSP3_RCP60D_mean
+  ) %>%
+  pivot_longer(
+    cols = c(SSP126, SSP160, SSP360),
+    names_to = "scenario",
+    values_to = "flow"
+  ) %>%
+  filter(year != 2015)
+
+agg_inflows <- flows_long %>%
+  group_by(year, scenario) %>%
+  summarise(
+    total_inflow = sum(abs(flow), na.rm = TRUE),
+    .groups = "drop"
+  )
+
+agg_inflows_cum <- agg_inflows %>%
+  arrange(scenario, year) %>%
+  group_by(scenario) %>%
+  mutate(cumulative_inflow = cumsum(total_inflow)) %>%
+  ungroup()
+
+agg_inflows_cum$scenario <- factor(
+  agg_inflows_cum$scenario,
+  levels = c("SSP126", "SSP160", "SSP360"),
+  labels = c("SSP1-2.6", "SSP1-6.0", "SSP3-6.0")
+)
+
+plot_cumulative <- ggplot(
+  agg_inflows_cum,
+  aes(x = as.numeric(year), y = cumulative_inflow / 1e3, color = scenario)
+) +
+  geom_line(size = 1.2) +
+  geom_point(size = 2) +
+  scale_y_continuous(labels = comma) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    x = "Year",
+    y = "Cumulative Migrants (Thousands)",
+    color = "Scenario"
+  ) +
+  theme_bw()
+
+plot_cumulative
+
+ggsave(
+  "Output/plot_cumulative.pdf",
+  plot_cumulative,
+  width = 4,
+  height = 3,
+  dpi = 300
+)
+dev.off()
+```
+
+Part 2: Top 20 Destination Countries (2020–2050) with Net Change Overlay
+```{r}
+# Scenario column
+ssp_col <- "GEPIC_WG2_SSP1_RCP60D_mean"
+
+# Function: Prepare inflow data
+prepare_flow <- function(df, top_n = 20) {
+
+  # Inflows in 2020 and 2050
+  df_summary <- df %>%
+    filter(year %in% c(2020, 2050)) %>%
+    group_by(dest_iso3c, year) %>%
+    summarise(
+      total = sum(abs(mean), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      names_from  = year,
+      values_from = total,
+      names_prefix = "y"
+    ) %>%
+    mutate(
+      y2020  = round(y2020, 0),
+      y2050  = round(y2050, 0),
+      change = y2050 - y2020
+    )
+  # Total inflow over full period (2020–2050)
+  df_total <- df %>%
+    filter(year >= 2020, year <= 2050) %>%
+    group_by(dest_iso3c) %>%
+    summarise(
+      total_inflow = round(sum(abs(mean), na.rm = TRUE), 0),
+      .groups = "drop"
+    )
+
+  df_summary %>%
+    left_join(df_total, by = "dest_iso3c") %>%
+    arrange(desc(total_inflow)) %>%
+    slice_head(n = top_n)
+}
+
+# Function: Plot inflows with change overlay
+plot_inflow <- function(df, scenario_name = "SSP1-6.0") {
+
+  ggplot(
+    df,
+    aes(y = reorder(dest_iso3c, total_inflow))
+  ) +
+    # Base bar: cumulative inflow (2020–2050)
+    geom_col(
+      aes(x = total_inflow),
+      fill = "#CDCD00"
+    ) +
+    # Overlay rectangle: change from 2020 to 2050
+    geom_rect(
+      aes(
+        xmin = pmin(total_inflow, total_inflow + change),
+        xmax = pmax(total_inflow, total_inflow + change),
+        ymin = as.numeric(reorder(dest_iso3c, total_inflow)) - 0.3,
+        ymax = as.numeric(reorder(dest_iso3c, total_inflow)) + 0.3,
+        fill = change > 0
+      ),
+      alpha = 0.7
+    ) +
+    # Change value labels
+    geom_text(
+      aes(
+        x = total_inflow + change,
+        label = comma(change),
+        hjust = if_else(change > 0, -0.15, -0.4)
+      ),
+      size = 3,
+      colour = "black"
+    ) +
+    # Color scale for change
+    scale_fill_manual(
+      values = c(
+        "TRUE"  = "#EE0000",
+        "FALSE" = "#008B45"
+      ),
+      labels = c(
+        "Decrease from 2020 to 2050",
+        "Increase from 2020 to 2050"
+      ),
+      name = "Change in inflow"
+    ) +
+    # Axis scaling
+    scale_x_continuous(
+      labels = comma,
+      expand = expansion(mult = c(0.05, 0.15))
+    ) +
+    # Labels
+    labs(
+      x = "Total inflow (2020–2050)",
+      y = "Destination country",
+      title = scenario_name
+    ) +
+    # Theme
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid      = element_blank(),
+      legend.position = c(0.8, 0.3),
+      legend.title    = element_text(size = 7, face = "bold"),
+      legend.text     = element_text(size = 7),
+      axis.title      = element_text(size = 7, face = "bold"),
+      axis.text       = element_text(size = 7, face = "bold")
+    )
+}
+
+# Prepare data for SSP1-6.0
+df_scenario <- data %>%
+  select(
+    orig_iso3c,
+    dest_iso3c,
+    year,
+    mean = all_of(ssp_col)
+  )
+
+inflow_df <- prepare_flow(df_scenario, top_n = 20)
+
+# Generate plot
+ssp160_inflow_plot <- plot_inflow(
+  inflow_df,
+  scenario_name = "SSP1-6.0"
+)
+ssp160_inflow_plot
+
+# Save figure
+ggsave(
+  filename = "Output/SSP160_Top20_Inflow_2020_2050.pdf",
+  plot = ssp160_inflow_plot,
+  width = 5,
+  height = 3,
+  dpi = 300
+)
+dev.off()
+```
+
+Part 3: Country-Level Inflow vs Outflow Proportions (2020 & 2050)
+```{r}
+# Scenario column
+ssp_col <- "GEPIC_WG2_SSP1_RCP60D_mean"
+
+# Read Africa shapefile
+africa <- read_sf("Data/Africa_regions.gpkg") %>%
+  filter(!ISO3 %in% c("CPV", "STP", "SYC", "MUS", "REU", "COM")) %>%
+  select(ISO3, region, NAME, geom)
+
+# Compute country centroids
+africa_centroids <- africa %>%
+  st_point_on_surface() %>%
+  mutate(
+    x = st_coordinates(.)[, 1],
+    y = st_coordinates(.)[, 2]
+  ) %>%
+  select(ISO3, NAME, x, y)
+
+# Prepare migration data (2020 & 2050)
+df_scen <- data %>%
+  select(orig_iso3c, dest_iso3c, year, mean = all_of(ssp_col)) %>%
+  filter(year %in% c(2020, 2050))
+
+# ---- Inflows ----
+inflow <- df_scen %>%
+  group_by(dest_iso3c, year) %>%
+  summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+  rename(ISO3 = dest_iso3c) %>%
+  mutate(type = "Inflow")
+
+# ---- Outflows ----
+outflow <- df_scen %>%
+  group_by(orig_iso3c, year) %>%
+  summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+  rename(ISO3 = orig_iso3c) %>%
+  mutate(type = "Outflow")
+
+# Combine and attach coordinates
+bubbles_df <- bind_rows(inflow, outflow) %>%
+  left_join(africa_centroids, by = "ISO3") %>%
+  filter(!is.na(x) & !is.na(value))
+
+# Pivot to pie format & compute radius
+pie_df <- bubbles_df %>%
+  select(ISO3, year, type, value, x, y) %>%
+  pivot_wider(
+    names_from = type,
+    values_from = value,
+    values_fill = 0
+  ) %>%
+  mutate(
+    total = Inflow + Outflow,
+    r = rescale(total, to = c(3, 8))
+  )
+
+# Join country metadata (adds region)
+pie_country <- pie_df %>%
+  left_join(africa %>% st_set_geometry(NULL), by = "ISO3")
+
+# Conditional jittering
+regions_to_jitter <- c("West Africa", "Southern Africa")
+
+pie_country <- pie_country %>%
+  group_by(year) %>%
+  mutate(
+    do_jitter = region %in% regions_to_jitter,
+    jitter_scale = if_else(do_jitter, rescale(r, to = c(1.5, 2.5)), 0),
+    x_plot = x + runif(n(), -3, 3) * jitter_scale,
+    y_plot = y + runif(n(), -3, 3) * jitter_scale
+  ) %>%
+  ungroup()
+
+# Plot
+gg_country <- ggplot() +
+
+  # ---- Base map ----
+  geom_sf(
+    data = africa,
+    fill = "#C7C7C7",
+    color = "#FFFFFF",
+    linewidth = 0.2
+  ) +
+
+  # ---- Leader lines (only jittered countries) ----
+  geom_segment(
+    data = pie_country %>% filter(do_jitter),
+    aes(x = x, y = y, xend = x_plot, yend = y_plot),
+    colour = "#E0E0E0",
+    linewidth = 0.25
+  ) +
+
+  # ---- Scatter pies ----
+  geom_scatterpie(
+    data = pie_country,
+    aes(x = x_plot, y = y_plot, r = r),
+    cols = c("Inflow", "Outflow"),
+    alpha = 0.75
+  ) +
+
+  # ---- Country labels (ISO3) ----
+  geom_text(
+    data = pie_country,
+    aes(x = x_plot, y = y_plot, label = ISO3),
+    size = 2,
+    colour = "black",
+    face = "bold"
+  ) +
+
+  # ---- Facet by year ----
+  facet_wrap(~year) +
+
+  # ---- Colors ----
+  scale_fill_manual(
+    values = c(
+      "Inflow"  = "#76EEC6",
+      "Outflow" = "#FF7F50"
+    ),
+    name = "Flow type\n(proportions)"
+  ) +
+
+  coord_sf() +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 12, face = "bold")
+  )
+
+# Show plot
+gg_country
+
+# Save figure
+ggsave(
+  filename = "Output/Country_PieFlows_2020_2050_SSP160.pdf",
+  plot = gg_country,
+  width = 10,
+  height = 6,
+  dpi = 300
+)
+dev.off()
+```
+
+Part 4: Regional Migration Totals (2020 vs 2050)
+```{r}
+# Scenario column
+ssp_col <- "GEPIC_WG2_SSP1_RCP60D_mean"
+
+# Read Africa shapefile (for regions)
+africa <- read_sf("Data/Africa_regions.gpkg") %>%
+  select(ISO3, region) %>%
+  st_set_geometry(NULL)
+
+# Prepare migration data (2020 & 2050)
+df_scen <- data %>%
+  select(orig_iso3c, dest_iso3c, year, mean = all_of(ssp_col)) %>%
+  filter(year %in% c(2020, 2050))
+
+# Inflows by destination region
+regional_inflow <- df_scen %>%
+  group_by(dest_iso3c, year) %>%
+  summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+  rename(ISO3 = dest_iso3c) %>%
+  left_join(africa, by = "ISO3") %>%
+  group_by(region, year) %>%
+  summarise(inflow = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Outflows by origin region
+regional_outflow <- df_scen %>%
+  group_by(orig_iso3c, year) %>%
+  summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+  rename(ISO3 = orig_iso3c) %>%
+  left_join(africa, by = "ISO3") %>%
+  group_by(region, year) %>%
+  summarise(outflow = sum(value, na.rm = TRUE), .groups = "drop")
+
+# Combine inflow & outflow
+regional_flows <- full_join(
+  regional_inflow,
+  regional_outflow,
+  by = c("region", "year")
+) %>%
+  replace_na(list(inflow = 0, outflow = 0)) %>%
+  pivot_longer(
+    cols = c(inflow, outflow),
+    names_to = "type",
+    values_to = "value"
+  )
+
+# Plot
+gg_region <- ggplot(
+  regional_flows,
+  aes(
+    x = region,
+    y = value,
+    fill = type
+  )
+) +
+
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width = 0.7
+  ) +
+
+  facet_wrap(~year) +
+
+  scale_fill_manual(
+    values = c(
+      "inflow"  = "#76EEC6",
+      "outflow" = "#FF7F50"
+    ),
+    labels = c(
+      "Inflow",
+      "Outflow"
+    ),
+    name = "Migration flow"
+  ) +
+
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+
+  labs(
+    x = "African region",
+    y = "Total migration",
+    title = "Regional Migration Totals",
+    subtitle = "Comparison between 2020 and 2050 (SSP1–6.0)"
+  ) +
+
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.text.x = element_text(angle = 30, hjust = 1, face = "bold"),
+    axis.title  = element_text(face = "bold"),
+    strip.text  = element_text(size = 12, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Show plot
+gg_region
+
+# Save figure
+ggsave(
+  filename = "Output/Regional_Migration_Totals_2020_2050_SSP160.pdf",
+  plot = gg_region,
+  width = 9,
+  height = 5,
+  dpi = 300
+)
+dev.off()
+```
+
+Part 5 (Supplementary): Top 10 Inflows & Outflows by Scenario
+```{r}
+ssp_cols <- c(
+  "SSP1-6.0" = "GEPIC_WG2_SSP1_RCP60D_mean",
+  "SSP2-4.5" = "GEPIC_WG2_SSP2_RCP45D_mean",
+  "SSP3-7.0" = "GEPIC_WG2_SSP3_RCP70D_mean"
+)
+
+# Years of interest
+years_use <- c(2020, 2050)
+
+# Function: prepare top 10 flows
+prepare_top10 <- function(df, flow_type = c("inflow", "outflow")) {
+
+  flow_type <- match.arg(flow_type)
+
+  if (flow_type == "inflow") {
+    df %>%
+      group_by(dest_iso3c, year, scenario) %>%
+      summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+      rename(country = dest_iso3c)
+  } else {
+    df %>%
+      group_by(orig_iso3c, year, scenario) %>%
+      summarise(value = sum(abs(mean), na.rm = TRUE), .groups = "drop") %>%
+      rename(country = orig_iso3c)
+  }
+}
+
+# Build dataset for all SSPs
+top10_data <- map_dfr(names(ssp_cols), function(ssp) {
+
+  data %>%
+    select(orig_iso3c, dest_iso3c, year,
+           mean = all_of(ssp_cols[[ssp]])) %>%
+    filter(year %in% years_use) %>%
+    mutate(scenario = ssp)
+})
+
+# Inflows & outflows
+inflow_top10 <- prepare_top10(top10_data, "inflow")
+outflow_top10 <- prepare_top10(top10_data, "outflow")
+
+
+# Select top 10 per scenario/year
+top10_combined <- bind_rows(
+  inflow_top10 %>% mutate(type = "Inflow"),
+  outflow_top10 %>% mutate(type = "Outflow")
+) %>%
+  group_by(scenario, year, type) %>%
+  slice_max(order_by = value, n = 10) %>%
+  ungroup()
+
+# Plot
+gg_top10 <- ggplot(
+  top10_combined,
+  aes(
+    x = reorder(country, value),
+    y = value,
+    fill = type
+  )
+) +
+
+  geom_col(width = 0.7) +
+  coord_flip() +
+
+  facet_grid(
+    scenario ~ year,
+    scales = "free_y"
+  ) +
+
+  scale_fill_manual(
+    values = c(
+      "Inflow"  = "#76EEC6",
+      "Outflow" = "#FF7F50"
+    )
+  ) +
+
+  scale_y_continuous(labels = scales::comma) +
+
+  labs(
+    x = NULL,
+    y = "Migration volume",
+    title = "Top 10 Inflows and Outflows by Scenario",
+    subtitle = "2020 vs 2050"
+  ) +
+
+  theme_bw(base_size = 10) +
+  theme(
+    panel.grid = element_blank(),
+    strip.text = element_text(size = 10, face = "bold"),
+    legend.position = "bottom"
+  )
+
+# Show plot
+gg_top10
+
+# Save figure
+ggsave(
+  filename = "Output/Supp_Top10_Flows_By_Scenario.pdf",
+  plot = gg_top10,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+dev.off()
+```
+
+Part 6 (Supplementary): Bilateral Migration Chord Diagrams
+```{r}
+ssp_col <- "GEPIC_WG2_SSP1_RCP60D_mean"
+year_use <- 2050
+
+# Prepare bilateral flows
+bilateral <- data %>%
+  select(orig_iso3c, dest_iso3c, year,
+         mean = all_of(ssp_col)) %>%
+  filter(year == year_use) %>%
+  mutate(flow = abs(mean)) %>%
+  group_by(orig_iso3c, dest_iso3c) %>%
+  summarise(value = sum(flow, na.rm = TRUE), .groups = "drop") %>%
+  filter(value > quantile(value, 0.90, na.rm = TRUE))  # top 10% only
+
+# Convert to matrix
+flow_matrix <- bilateral %>%
+  pivot_wider(
+    names_from = dest_iso3c,
+    values_from = value,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("orig_iso3c") %>%
+  as.matrix()
+
+# Color palette
+country_colors <- setNames(
+  colorRampPalette(c("#2166AC", "#B2182B"))(nrow(flow_matrix)),
+  rownames(flow_matrix)
+)
+
+# Plot
+circos.clear()
+circos.par(start.degree = 90, gap.degree = 5)
+
+chordDiagram(
+  x = flow_matrix,
+  grid.col = country_colors,
+  transparency = 0.25,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  link.arr.type = "big.arrow"
+)
+
+title(
+  main = "Dominant Bilateral Migration Corridors (2050, SSP1–6.0)",
+  cex.main = 1
+)
+
+# Save plot
+pdf(
+  "Output/Supp_Bilateral_Chord_SSP160_2050.pdf",
+  width = 8,
+  height = 8
+)
+circos.clear()
+circos.par(start.degree = 90, gap.degree = 5)
+chordDiagram(
+  x = flow_matrix,
+  grid.col = country_colors,
+  transparency = 0.25,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  link.arr.type = "big.arrow"
+)
+title(
+  main = "Dominant Bilateral Migration Corridors (2050, SSP1–6.0)",
+  cex.main = 1
+)
+dev.off()
+```
+
+##### END ######
+
+
