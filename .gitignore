@@ -1,7 +1,7 @@
 # ----------------------
 # R-specific files
 # ----------------------
-.Rhistory
+*.Rhistory
 .Rproj.user/
 *.RData
 *.RDS
