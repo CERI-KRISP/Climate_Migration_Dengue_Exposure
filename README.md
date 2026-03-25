@@ -8,7 +8,7 @@
 
 Climate-induced human migration has become an important factor influencing infectious disease dynamics in Africa. Using continent-wide projections of climate-induced migration and population change through 2050 under multiple socio‑economic and emissions scenarios, we assess how cross‑border and internal movements shift over space and time, and how these shifts reshape population exposure to dengue. By 2050, climate impacts could force roughly 1.1 million people to move across national borders and nearly 75 million to relocate internally. Cross‑border migration is projected to occur mainly within Southern Africa, while internal migration is expected to concentrate people in cities, border regions, and areas with favorable climates. These mobility patterns are estimated to increase dengue exposure by shifting populations into areas where transmission is already established. By mid-century, cross-border migration alone could expose up to 340,000 additional people across the continent. Our findings highlight the need to integrate mobility dynamics into early public health planning and preparedness efforts. 
 
-![Overview map](Graphical abstract.jpg)
+![Overview map](GA.jpg)
 
 # Acknowledgments  
 
