@@ -1,5 +1,9 @@
 
-This analysis examines projected *cross-border migration* dynamics across Africa under future climate and socioeconomic scenarios (SSPs) for 2020 and 2050. Using country-level migration data, we quantify inflows and outflows, identify top destination and origin countries, and aggregate flows by African sub-regions. We complement these analyses with country-level composition maps and bilateral migration chord diagrams to reveal structural connectivity and dominant migration corridors. 
+This analysis examines projected *cross-border migration* dynamics across Africa 
+under future climate and socioeconomic scenarios (SSPs) for 2020 and 2050. 
+Using country-level migration data, we quantify inflows and outflows, identify top destination and origin countries, 
+and aggregate flows by African sub-regions. We complement these analyses with country-level 
+composition maps and bilateral migration chord diagrams to reveal structural connectivity and dominant migration corridors. 
 
 Part 0: Libraries & Setup
 ```{r}
@@ -15,9 +19,6 @@ library(ggrepel)
 library(RColorBrewer)
 library(stringr)
 library(circlize)
-
-# Working directory
-setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
 
 # Load main dataset
 data <- read_csv(
@@ -660,6 +661,5 @@ title(
 dev.off()
 ```
 
-##### END ######
 
 

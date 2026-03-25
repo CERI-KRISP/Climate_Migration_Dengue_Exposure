@@ -17,9 +17,6 @@ library(patchwork)
 library(scales)
 library(viridis)
 
-# Set working directory
-setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
-
 # Load migration flows
 migration <- read.csv("Data/BilateralMigration/Summary_ACMI_bilateral_migration_2015_2050.csv")
 
@@ -335,7 +332,7 @@ ggsave("Output/risk_cumulative_plot.pdf",
        dpi = 300)
 ```
 
-Part 3: Top 10 Most Affected Countries – Bar Plots
+Part 3: Top 10 Most Affected Countries
 ```{r}
 # Extract Top 10 Countries per Year
 get_top10_per_year <- function(df, 
@@ -469,7 +466,7 @@ ggsave("Output/SSP160_Increase_AtRisk.pdf",
 
 ```
 
-Part 4: Bubble Plot – At-Risk After Migration vs Absolute Change vs Percent Increase
+Part 4: Bubble Plot: At-Risk After Migration vs Absolute Change vs Percent Increase
 ```{r}
 # Prepare Bubble Plot Data
 prepare_bubble_data <- function(df_scenario, years = c(2020, 2050)) {
@@ -643,7 +640,7 @@ ggsave("Output/bar_plot_risk_SSP160.pdf",
 
 ```
 
-Part 6: Bubbles for Spatial Distribution (Africa)
+Part 6: Bubbles for Spatial Distribution of Population at Risk & Migration Change
 ```{r}
 # Load Africa polygons 
 africa <- read_sf("Data/Africa_regions.gpkg") %>%
@@ -770,7 +767,7 @@ ggsave(
 
 ```
 
-Part 7:  Regional Map of Population at Risk & Migration Change
+Part 7:  Regional Map of Population at Risk & Migration Change 
 ```{r}
 # Parameters
 selected_years <- c(2020, 2050)
@@ -891,7 +888,7 @@ ggsave(
 )
 ```
 
-Part 8: Bar Plot of Absolute Population Change at Risk by Region
+Part 8: Bar Plot of Absolute Population Change at Risk by Region  
 ```{r}
 # Parameters
 selected_years <- c(2020, 2050)
@@ -961,7 +958,7 @@ ggsave(
 )
 ```
 
-Part 9: Dengue Risk and Migration Flow Directions
+Part 9: Dengue Risk and Migration Flow Directions 
 ```{r}
 # Load Africa shapefile and filter islands
 africa <- read_sf("Data/Africa_regions.gpkg") %>%

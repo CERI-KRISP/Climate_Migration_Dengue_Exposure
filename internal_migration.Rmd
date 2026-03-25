@@ -14,9 +14,6 @@ library(scales)
 library(ggnewscale)
 library(ggspatial)
 
-# Set working directory
-setwd("/Users/drdesalewmoges/Documents/Papers/Climate_dengue")
-
 # Load Africa boundaries
 africa_sf <- st_read("Data/Africa_regions.gpkg", quiet = TRUE)
 ```
@@ -262,6 +259,4 @@ ggsave("Output/hotspot.pdf",
        height=6, 
        dpi=300)
 ```
-
-#### END #####
 
