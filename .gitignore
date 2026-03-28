@@ -26,3 +26,4 @@ Residual_Maps/
 .DS_Store
 Thumbs.db
 .vscode/.DS_Store
+.Rhistory
