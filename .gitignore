@@ -25,4 +25,4 @@ Residual_Maps/
 # ----------------------
 .DS_Store
 Thumbs.db
-.vscode/
+.vscode/.DS_Store
